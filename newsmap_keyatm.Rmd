@@ -1,0 +1,235 @@
+---
+title: "Semi-supervised classification model: newsmap and keyATM"
+author: "Miras Tolepbergen"
+date: "2023-10-27"
+output:
+  word_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+rm(list=ls(all=TRUE))
+getwd()
+setwd("C:/Users/Miras/Desktop/u_m/1st/big_data_analytics/Labs/projects")
+getwd()
+library(manifestoR)
+library(quanteda)
+library(dplyr)
+
+# specify your key to get access to the CMP dataset via API
+mp_setapikey(key.file = NULL, key = "8c56cf43c5629fdaac42e4ae791a317b")
+```
+```{r}
+library(newsmap)
+library(quanteda)
+```
+
+```{r}
+uk <- mp_availability(countryname == "United Kingdom")
+uk
+glimpse(uk)
+```
+
+```{r}
+uk<- as.data.frame(uk)
+str(uk)
+print(uk[c("party", "date", "originals", "manifestos")])
+table(uk$originals, uk$manifestos)
+table(uk$originals)
+table(uk$manifestos)
+```
+
+```{r}
+# Let's focus on the British manifestos of the 2019 elections
+uk19 <- mp_corpus(countryname=="United Kingdom" & date == 201912)
+uk19 
+summary(uk19)
+head(content(uk19[["51110_201912"]]))
+```
+
+```{r}
+cmp <- mp_maindataset() # let's download the CMP core dataset
+View(cmp)
+uk_cmp <- cmp[ which(cmp$countryname=="United Kingdom" & cmp$date==201912),] # select name of country and elections
+print(uk_cmp [c("partyname", "party", "edate", "date")])
+```
+
+```{r}
+# converting the 10 party manifestoes recovered from the CMP dataset to a Quanteda corpus
+
+quanteda_uk_party <- corpus(uk19)
+summary(head(quanteda_uk_party ))
+ndoc(quanteda_uk_party )
+
+# let's add the party labels to the doc vars!
+uk_cmp$partyname
+uk_cmp$party
+quanteda_uk_party  $party2 <-uk_cmp$partyname
+quanteda_uk_party  $party_label<-uk_cmp$party
+head(docvars(quanteda_uk_party ))
+
+# let's also rename the documents in the corpus according to party labels
+docnames(quanteda_uk_party) <- uk_cmp$partyname
+summary(head(quanteda_uk_party))
+
+# let's tokenize the manifestoes
+tok_uk <- tokens(quanteda_uk_party ,  remove_punct = TRUE, remove_numbers=TRUE, remove_symbols = TRUE, split_hyphens = TRUE, remove_separators = TRUE, remove_url = TRUE)
+tok_uk <- tokens_remove(tok_uk , stopwords("en"))
+tok_uk <- tokens_wordstem (tok_uk )
+# computing the DFM
+dfm_uk <- dfm(tok_uk ) 
+dfm_uk <- dfm_remove(dfm_uk, stopwords('en'), min_nchar = 2)
+head(docvars(dfm_uk ))
+```
+
+#  newsmap
+
+```{r}
+# let's create a dictionary of seed-words via the "dictionary" function of Quanteda and let's apply it to our dfm
+
+dict <- dictionary(list(
+                economy = c("inflation", "econ*", "debt", "trade", "income", "market", "currency", "gdp", "budget"),
+                migration = c("migration", "immigration", "refugee", "migrant", "asylum", "divers*"),
+                climate = c("climate", "warming", "pollut*", "environment", "green"),
+                health_care = c("nhs", "health", "medic*"),
+                security = c("arms", "secur*", "weapon", "military" )
+))
+                                          
+dict
+
+label <- dfm_lookup(dfm_uk, dictionary = dict)
+label
+```
+
+```{r}
+# let's train the model
+model_en <- textmodel_newsmap(dfm_uk, label)
+# now all the words of our texts, including those not included in the seed-words, get a value!
+
+predict(model_en)
+```
+
+#  keyATM
+
+```{r}
+library(keyATM)
+library(ggplot2)
+library(cowplot)
+```
+
+```{r}
+# I keep only words that occurr in the top 90% of the distribution and in less than 10% of documents 
+# (i.e., very frequent but document-specific words) 
+
+table(ntoken(dfm_uk) > 0)
+keyATM_docs <- keyATM_read(texts = dfm_uk)
+summary(keyATM_docs)
+```
+
+```{r}
+keywords <- list(
+                economy = c("inflation", "econ", "debt", "trade", "income", "market", "currency", "gdp", "budget"),
+                migration = c("migration", "immigration", "refugee", "migrant", "asylum", "divers"),
+                climate = c("climate", "warming", "pollut", "environment", "green"),
+                health_care = c("nhs", "health", "medic"),
+                security = c("arms", "secur", "weapon", "military"))
+keywords
+
+key_viz <- visualize_keywords(docs = keyATM_docs, keywords = keywords)
+key_viz
+values_fig(key_viz)
+```
+
+```{r}
+system.time(out <- keyATM(docs = keyATM_docs,    
+              no_keyword_topics = 1,               
+              keywords          = keywords,       
+              model             = "base",        
+              options           = list(seed = 123))) 
+```
+
+```{r}
+top_words(out, 10)
+top_docs(out)
+#could no_keyword topic be about political future of the UK within Brexit context?
+```
+
+
+
+```{r}
+out$theta  # Document-topic distribution
+apply(out$theta,2,mean) # mean distribution of topics
+
+# Let's plot the expected proportions of the corpus belonging to each estimated topic along with the top five words 
+# associated with the topic
+plot_topicprop(out, show_topic = 1:5, n=5)
+
+out$phi    # Topic-word distribution
+```
+
+```{r}
+plot_modelfit(out) # If the model is working as expected, we would observe an increase trend for the log-likelihood and an decrease trend for the perplexity
+```
+
+```{r}
+plot_alpha(out)
+plot_pi(out) #keywords for migration and security are not representative thus problematic
+```
+
+# Adding Covariate(s): Left-Right dimension applied
+```{r}
+cmp<-mp_maindataset() 
+dimension <- cmp$rile 
+```
+
+```{r}
+system.time(out <- keyATM(docs              = keyATM_docs,
+              no_keyword_topics = 1,
+              keywords          = keywords,
+              model             = "covariates",
+              model_settings    = list(covariates_data    = dimension  ,
+                                       covariates_formula = ~ dimension ),
+              options           = list(seed = 123),
+                keep              = c("Z", "S")  ))
+```
+```{r}
+covariates_info(out)
+```
+
+
+
+
+
+
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```

@@ -1,0 +1,181 @@
+---
+title: "Unsupervised Classification Model: Structural Topic Models and Dictionary Model (Sentiment Analysis)"
+author: "Miras Tolepbergen"
+date: "2023-10-24"
+output:
+  word_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+install.packages("stm", repos='http://cran.us.r-project.org')
+install.packages("syuzhet", repos='http://cran.us.r-project.org')
+install.packages("reshape2", repos='http://cran.us.r-project.org')
+
+
+rm(list=ls(all=TRUE))
+setwd("C:/Users/Miras/Desktop/u_m/1st/big_data_analytics/Labs/projects")
+getwd()
+library(quanteda)
+library(readtext)
+library(ggplot2)
+library(stm)
+library(dplyr)
+library(syuzhet)
+library(reshape2)
+```
+
+```{r}
+trump <- readRDS("C:/Users/Miras/Desktop/u_m/1st/big_data_analytics/Labs/projects/Trump2018.rds")
+glimpse(trump)
+str(trump)
+
+trump$date <- as.numeric(trump$date)
+
+date <- trump$date
+
+trump$Tweet.Text <- iconv(trump$Tweet.Text, "", "UTF-8") 
+trump$Text2 <- trump$Tweet.Text
+
+myCorpus <- corpus(trump, text_field = "Tweet.Text")
+head(summary(myCorpus))
+```
+
+```{r}
+tok <- tokens(myCorpus , remove_punct = TRUE, remove_numbers=TRUE, remove_symbols = TRUE, split_hyphens = TRUE, remove_separators = TRUE, remove_url = TRUE)
+tok <- tokens_remove(tok, stopwords("en"))
+tok <- tokens_wordstem (tok)
+myDfm <- dfm(tok)
+
+myDfm [ntoken(myDfm ) == 0,]
+myDfm<- myDfm[ntoken(myDfm) > 0,]
+
+head(docvars(myCorpus))
+head(docvars(myDfm))
+```
+
+
+
+```{r}
+DfmStm <- convert(myDfm, to = "stm", docvars = docvars(myDfm))
+str(DfmStm)
+str(DfmStm$meta)
+```
+
+
+
+```{r}
+set.seed(02138)
+K <-c(3:20)
+system.time(storage  <- searchK(DfmStm $documents, DfmStm $vocab, K, max.em.its = 250, 
+                                prevalence = ~ s(date), data = DfmStm$meta, init.type = "Spectral")) #non-linear relationship is expected
+
+```
+
+
+
+```{r}
+results <- data.frame(Coherence=unlist(storage$results$semcoh), Exclusivity=unlist(storage$results$exclus), K=unlist(storage$results$K))
+results
+```
+
+
+
+```{r}
+ggplot(results , aes(x=Coherence, y=Exclusivity)) + geom_point() + 
+  geom_text(label=results$K, vjust=-1) +  
+  ylab(label="Exclusivity ") +  xlab("Semantic Coherence")  + 
+  theme_light() 
+str(DfmStm)
+```
+
+
+
+```{r}
+################## let's try K = 13
+
+system.time(stmFitted <- stm(DfmStm $documents, DfmStm $vocab, K = 13, max.em.its = 250, 
+                             prevalence = ~ s(date),  data = DfmStm $meta, init.type = "Spectral"))
+```
+
+
+
+```{r}
+labelTopics(stmFitted, n=7) # 7 features for each topic 
+
+```
+
+```{r}
+plot(stmFitted, type = "summary", labeltype = c("frex"), n=5)  # topic 10 is the most frequent one
+```
+#topics 7 and 8 seem to overlap, as well as topics 2 and 1
+
+
+```{r}
+################## let's try K = 11
+
+system.time(stmFitted <- stm(DfmStm $documents, DfmStm $vocab, K = 11, max.em.its = 250, 
+                             prevalence = ~ s(date),  data = DfmStm $meta, init.type = "Spectral"))
+```
+
+
+
+```{r}
+labelTopics(stmFitted, n=7) # 7 features for each topic 
+```
+
+
+
+
+
+```{r}
+plot(stmFitted, type = "summary", labeltype = c("frex"), n=5)  # topic 10 is the most frequent one
+```
+
+
+
+
+```{r}
+plot(stmFitted, type = "hist", labeltype = c("frex")) # Here topic 1 appears as more "evenly" distributed across documents than topic 4 for example
+
+
+```
+
+# sentiment analysis: applying dictionary by Young & Soroka (2012)
+
+
+```{r}
+lengths(data_dictionary_LSD2015)
+head(data_dictionary_LSD2015)
+
+is.dictionary(data_dictionary_LSD2015)
+```
+
+
+
+
+
+```{r}
+sentiment <- dfm_lookup(myDfm  , dictionary = data_dictionary_LSD2015[1:2])
+sentiment 
+Dictionary <-convert(sentiment , to="data.frame")
+str(Dictionary )
+Dictionary$Sentiment <- Dictionary$posit/(Dictionary$negat+Dictionary$posit)
+str(Dictionary )
+```
+
+
+
+
+```{r}
+ggplot(Dictionary, aes(x=Sentiment))+
+  geom_histogram(color="black", fill="darkgrey")
+
+```
+
+
+#Trump seemsto be more positive than not over his tweets 

@@ -1,0 +1,353 @@
+---
+title: "Supervised and Unsupervised Scaling Models: Wordscores and Wordfish"
+output:
+  word_document: default
+  pdf_document: default
+date: "2023-10-11"
+---
+
+```{r setup, include=FALSE}
+rm(list=ls(all=TRUE))
+setwd("C:/Users/Miras/Desktop/u_m/1st/big_data_analytics/Labs/projects")
+getwd()
+
+library(readtext)
+library(quanteda)
+library(quanteda.textmodels)
+library(quanteda.textplots)
+library(quanteda.textstats)
+library(ggplot2)
+library(cowplot)
+library(dplyr)
+library(wordshoal)
+library(plotrix)
+```
+
+
+```{r}
+myText <- readtext("C:/Users/Miras/Desktop/u_m/1st/big_data_analytics/Labs/projects/uk_new_manifestos/*.txt", 
+                   docvarsfrom = "filenames", dvsep = " ", docvarnames = c("Party", "Year"))
+glimpse(myText)
+
+myText$text <- gsub("'"," ",myText$text)
+myText$text <- gsub("[\u00E2]"," ",myText$text)
+
+testCorpus <- corpus(myText)
+summary(testCorpus)
+
+testCorpus <- corpus_subset(testCorpus, Year > 2010)
+summary(testCorpus)
+
+
+tok1 <- tokens(testCorpus, remove_punct = TRUE, remove_numbers=TRUE, remove_symbols = TRUE, split_hyphens = TRUE, remove_separators = TRUE)
+tok1 <- tokens_remove(tok1, stopwords("en"))
+tok1 <- tokens_wordstem (tok1)
+myDfm <- dfm(tok1)
+topfeatures(myDfm , 20)
+myDfm <- dfm_remove(myDfm, min_nchar=2)
+topfeatures(myDfm , 20)
+
+Simil <- textstat_simil(myDfm , method = "cosine")
+Simil
+Simil[c(1,3,5),c(1,3,5)] #similarity > 0.6 
+```
+
+1. Wordscore supervised scaling model
+
+```{r}
+# reference texts are 2015 parties manifestos: Economic dimension (scores refer to a left-right economic scale):
+#CONS=7.85; Lab=3.85; Lib=5.14; UKIP=8.57 [source of parties’ scores: 2014 Chapel Hill expert survey]
+docnames(myDfm)
+# reference texts are 1st, 3rd, 5th, 7th.
+ws <- textmodel_wordscores(myDfm, c(7.85, NA, 3.85, NA, 5.14, NA, 8.57, NA))
+summary(ws) 
+```
+
+
+```{r}
+textplot_scale1d(ws,  margin = "features",
+                 highlighted = c( "conservative", "secure", "economic", "brighter", "future" ), 
+                 highlighted_color = "red")   #the words with highest scores were highlighted. Do they represent right political views? Not certainly because only 8 documents are being analyzed. 
+```
+```{r}
+pr_raw <- predict(ws, se.fit = TRUE, newdata = myDfm)
+pr_raw
+textplot_scale1d(pr_raw)   
+```
+```{r}
+# alternative way (with c.i. rather than with s.e.)
+pr_all <- predict(ws, interval = "confidence", newdata = myDfm)
+pr_all
+textplot_scale1d(pr_all)
+```
+
+
+```{r}
+# Plot estimated document positions and group by "party" variable 
+summary(testCorpus)
+textplot_scale1d(pr_all,  groups = docvars(testCorpus, "Party"))
+```
+
+
+```{r}
+# we want to predict only the virgin texts using the rescaling LGB option. Because raw scores are dispersed on a much smaller scale, they cannot therefore be directly compared to the exogenous scores attached to the reference texts
+summary(ws) 
+pr_lbg <- predict(ws, rescaling = "lbg", newdata = myDfm[c(2, 4, 6, 8), ])
+pr_lbg
+```
+Apparently, UKIP is positioned on the extreme right position on the left-right spectrum related to Economic policies, while Labour party is the leftest one not very much differing from Conservatives and Liberals in 2017.
+
+
+```{r}
+# reference texts are 2015 parties manifestos: EU dimension(higher score implies being more pro-EU): 
+#CONS=3.14; Lab=5.57; Lib=6.71; UKIP=1.14 [source of parties’ scores: 2014 Chapel Hill expert survey]
+docnames(myDfm)
+# reference texts are 1st, 3rd, 5th, 7th.
+ws2 <- textmodel_wordscores(myDfm, c(3.14, NA, 5.57, NA, 6.71, NA, 1.14, NA))
+summary(ws2)
+```
+```{r}
+textplot_scale1d(ws2,  margin = "features",
+                 highlighted = c( "leadership", "deliv", "life", "access", "provid" ), 
+                 highlighted_color = "red") #example of highest scoring words were highlighted. Do they represent pro-EU policy perspective? Difficult to say because only  documents are being analyzed.
+```
+```{r}
+pr_raw2 <- predict(ws2, se.fit = TRUE, newdata = myDfm)
+pr_raw2
+textplot_scale1d(pr_raw2)
+```
+```{r}
+summary(ws) 
+pr_lbg2 <- predict(ws2, rescaling = "lbg", newdata = myDfm[c(2, 4, 6, 8), ])
+pr_lbg2
+```
+Apparently, UKIP is least pro-EU, while Liberals are the biggest pro-EU party in 2017.
+
+```{r}
+# alternative way (with c.i. rather than with s.e.)
+pr_all2 <- predict(ws2, interval = "confidence", newdata = myDfm)
+pr_all2
+textplot_scale1d(pr_all2)
+```
+
+```{r}
+pr_lbg2 <- predict(ws2, rescaling = "lbg", newdata = myDfm[c(2, 4, 6, 8), ], interval = "confidence")
+pr_lbg2
+```
+
+```{r}
+#comparison: economic VS EU dimensions
+eco <- textplot_scale1d(pr_all)
+EU <- textplot_scale1d(pr_all2)
+
+plot_grid(eco , EU , labels = c('Economic', 'EU'))
+```
+
+```{r}
+str(ws)
+str(pr_all)
+str(pr_all2)
+
+# check for the correlation
+party <- ws$x@Dimnames$docs
+score_EU <- pr_all2$fit
+score_eco <- pr_all$fit
+
+scores_texts <-data.frame(party, score_EU, score_eco )
+str(scores_texts) 
+colnames(scores_texts)[2] <- "scoreEU"
+colnames(scores_texts)[5] <- "scoreECO"
+str(scores_texts) 
+
+cor(scores_texts$scoreEU, scores_texts$scoreECO)
+```
+
+```{r}
+# Plotting the 2-D policy space
+
+ggplot(scores_texts, aes(x=scoreECO, y=scoreEU)) + geom_point() + 
+  geom_text(label=scores_texts$party, vjust=-1) +  
+  ylab(label="EU policy") +  xlab("Economic policy")  + 
+  theme_light() 
+```
+
+As a result, we got scores for the virgin text (i.e. party manifestos for 2017). And in relation to the left-right economic dimension it is seen that UKIP and Conservatives shifted to the left in 2017 while Liberals and Labour parties shifted to the right along the scale. At the same time, while UKIP and Conservatives moved towards pro EU policy direction in 2017 in comparison to their positions in 2015, Liberals and Labour party shifted in opposite directions. Such positions of UK parties is not surprising given the political environment of 201 where EU was shocked with terrorist attacks in France, migrant influx, and most importantly for Brits promised Brexit referendum. As a result fo 2015 elections Conservatives won and took formed government. 
+
+
+
+
+2. Wordfish unsupervised scaling model
+
+```{r}
+# here: lab 2015 to the left of UKIP 2015
+wfm <- textmodel_wordfish(myDfm, dir = c(3, 7))
+summary(wfm)
+```
+
+```{r}
+str(wfm)
+scores_words <-data.frame(wfm$features, wfm$beta, wfm$psi)
+str(scores_words) 
+```
+
+```{r}
+# Let's check for the correlation between psi and beta i.e. level of idiosyncrasy at the level of the word and words differentiating document's position along latent dimension
+cor(abs(scores_words$wfm.beta), scores_words$wfm.psi)
+#negative correlation where psi is larger than beta
+```
+
+```{r}
+# Plot estimated word positions
+ggplot(scores_words, aes(wfm.beta, wfm.psi, label= wfm.features))+
+  geom_point() +geom_text(hjust=0, vjust=0) + 
+  theme_light() +
+  labs(title  = "Scatterplot for UK-manifestos",
+       x = "Estimated Beta",
+       y = "Estimated Psi")
+```
+
+```{r}
+# top 40 features for negative beta: liber, democrat, pollut...  
+head(scores_words[order(scores_words$wfm.beta),], 40)
+```
+
+```{r}
+# top 40 words for positive beta: spokesman, pledges, spokeswoman...
+tail(scores_words[order(scores_words$wfm.beta),], 40) 
+
+# in this case we have just 6 documents and it's not very clear the meaning of the latent dimension just
+# by looking at betas (at least the first 40 features). Perhaps liberal vs. conservative?
+```
+
+```{r}
+# let's extract the top 10 words with either the largest positive or negative beta
+scores_words2 <- top_n(scores_words, 10, wfm.beta ) 
+scores_words2
+```
+
+```{r}
+scores_words3 <- top_n(scores_words, -10, wfm.beta ) 
+scores_words3
+```
+```{r}
+scores_words_new <- rbind(scores_words2, scores_words3)
+# reorder the features
+scores_words_new  <-  mutate(scores_words_new, Feature= reorder(wfm.features, wfm.beta))
+
+ggplot(scores_words_new , aes(Feature, wfm.beta))  +
+  geom_col(aes(fill = wfm.psi)) +
+  scale_fill_viridis_c() + 
+  coord_flip() + 
+  theme_light() + 
+  labs(title = "\nTop 10 words with the highest/lowest beta-value\n",
+       x = "",
+       y = "Beta",
+       fill = "Psi")
+#top 10 words that determine a document's position along latent dimension
+```
+```{r}
+textplot_scale1d(wfm)
+```
+
+```{r}
+textplot_scale1d(wfm,  groups = docvars(testCorpus, "Party"))
+```
+
+
+```{r}
+# Comparison of the results we got from Wordfish with the raw score ones we got from Wordscores using the economic policy position
+
+ws <- textmodel_wordscores(myDfm, c(7.85, NA, 3.85, NA, 5.14, NA, 8.57, NA))
+pr_all <- predict(ws, interval = "confidence")
+
+# Comparing wordscores vs wordfish
+wordscores <- textplot_scale1d(pr_all)
+wordfish <- textplot_scale1d(wfm)
+plot_grid(wordscores , wordfish , labels = c('Wordscores', 'Wordfish'))
+```
+```{r}
+# check for the correlation
+party <- wfm$docs
+score_wf <-wfm$theta
+score_ws <- pr_all$fit
+
+scores_texts <-data.frame(party, score_wf, score_ws)
+str(scores_texts) 
+colnames(scores_texts)[3] <- "score_ws"
+str(scores_texts) 
+```
+```{r}
+# high but not perfect correlation. Two different dimensions?
+cor(scores_texts$score_ws, scores_texts$score_wf)
+```
+```{r}
+# Comparison of the results we got from Wordfish with the raw score ones we got from Wordscores using the EU policy position
+
+# Wordscores
+ws2 <- textmodel_wordscores(myDfm, c(3.14, NA, 5.57, NA, 6.71, NA, 1.14, NA))
+pr_all2 <- predict(ws2, interval = "confidence")
+
+# Comparing wordscores vs wordfish
+wordscores2 <- textplot_scale1d(pr_all2)
+wordfish <- textplot_scale1d(wfm)
+plot_grid(wordscores2 , wordfish , labels = c('Wordscores', 'Wordfish'))
+```
+```{r}
+party <- wfm$docs
+score_wf <-wfm$theta
+score_ws2 <- pr_all2$fit
+
+scores_texts <-data.frame(party, score_wf, score_ws2)
+str(scores_texts) 
+colnames(scores_texts)[3] <- "score_ws2"
+str(scores_texts) 
+```
+```{r}
+# high negative correlation. Two different dimensions for sure?
+cor(scores_texts$score_ws2, scores_texts$score_wf)
+```
+```{r}
+#wordfish analysis results for 2015 party programs as the reference scores to estimate wordscores' raw scores
+
+docvars(myDfm)
+wordfish_scores <- scores_texts$score_wf
+wordfish_scores
+```
+```{r}
+ws3 <- textmodel_wordscores(myDfm, c(-0.08, NA, -0.4, NA, -0.94, NA, 1.45, NA))
+pr_all3 <- predict(ws3, interval = "confidence")
+
+wordscores3 <- textplot_scale1d(pr_all3)
+wordfish <- textplot_scale1d(wfm)
+plot_grid(wordscores3 , wordfish , labels = c('Wordscores', 'Wordfish'))
+```
+Generally, both methods could resemble each other roughly in terms of parties' positioning along the latent dimension. However, while wordscore positions UKIP 2015 to the right from UKIP 2017 along the spectrum, according to wordfish method UKIP 2017 is to the right from UKIP 2015. Other parties follow similar pattern. Are dimensions slightly different in two plots? 
+
+```{r}
+# check for the correlation
+party <- wfm$docs
+score_wf <-wfm$theta
+score_ws3 <- pr_all3$fit
+
+scores_texts <-data.frame(party, score_wf, score_ws3)
+str(scores_texts) 
+colnames(scores_texts)[3] <- "score_ws3"
+str(scores_texts)
+```
+```{r}
+cor(scores_texts$score_ws3, scores_texts$score_wf) #correlation is high but not perfect. 
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+

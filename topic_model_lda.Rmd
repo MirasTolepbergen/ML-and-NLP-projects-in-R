@@ -1,0 +1,186 @@
+---
+title: "Unsupervised Classification Model: Topic-model (LDA)"
+author: "Miras Tolepbergen"
+date: "2023-10-16"
+output:
+  word_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+install.packages("topicmodels", repos='http://cran.us.r-project.org')
+install.packages("lubridate", repos='http://cran.us.r-project.org')
+install.packages("topicdoc", repos='http://cran.us.r-project.org')
+install.packages("ldatuning", repos='http://cran.us.r-project.org')
+install.packages("tidytext", repos='http://cran.us.r-project.org')
+devtools::install_github("chainsawriot/oolong")
+```
+```{r}
+rm(list=ls(all=TRUE))
+setwd("C:/Users/Miras/Desktop/u_m/1st/big_data_analytics/Labs/projects")
+getwd()
+library(quanteda)
+library(readtext)
+library(ggplot2)
+library(topicmodels)
+library(tidytext)
+library(dplyr)
+library(topicdoc)
+library(cowplot)
+library(ldatuning)
+
+myText <- read.csv("guardian2013.csv", stringsAsFactors=FALSE)
+str(myText)
+```
+
+## Including Plots
+
+```{r}
+myText$text2 <- myText$text
+news_corp <- corpus(myText)
+head(summary(news_corp))
+```
+
+```{r}
+tok <- tokens(news_corp, remove_punct = TRUE, remove_numbers=TRUE, remove_symbols = TRUE, split_hyphens = TRUE, remove_separators = TRUE)
+tok <- tokens_remove(tok, stopwords("en"))
+tok <- tokens_wordstem (tok)
+news_dfm <- dfm(tok)
+news_dfm <- dfm_remove(news_dfm, c('*-time', '*-timeUpdated', 'GMT', 'BST')) 
+news_dfm <-   dfm_trim(news_dfm, min_termfreq = 0.95, termfreq_type = "quantile", 
+                     max_docfreq = 0.1, docfreq_type = "prop")
+news_dfm[1:2, 1:5]
+```
+```{r}
+str(docvars(news_dfm))
+```
+```{r}
+topfeatures(news_dfm, 20)
+```
+```{r}
+table(ntoken(news_dfm)== 0)
+news_dfm <- news_dfm[ntoken(news_dfm) > 0,]
+```
+```{r}
+dtm <- convert(news_dfm, to = "topicmodels")
+```
+
+# Identifying the optimal number of topics: coherence and exclusivity
+
+```{r}
+top <- c(4:25) # let's change k between 4 and 25 and each time we store the corresponding avg. values of both coherence and exclusivity
+top
+```
+```{r}
+results <- data.frame(first=vector(), second=vector(), third=vector()) 
+# let's create an empty data frame that we will fill later on
+results 
+```
+```{r}
+system.time(
+for (i  in top) 
+{ 
+set.seed(123)
+lda <- LDA(dtm, method= "Gibbs", k = i,  control=list(verbose=50L, iter=1000))
+topic <- i
+coherence <- mean(topic_coherence(lda, dtm))
+exclusivity <- mean(topic_exclusivity(lda))
+results <- rbind(results , cbind(topic, coherence, exclusivity ))
+    }
+)
+
+results
+str(results)
+```
+```{r}
+ggplot(results, aes(x=coherence, y=exclusivity)) + geom_point() + 
+  geom_text(label=results$topic, vjust=1) +  
+ylab(label="Exclusivity ") +  xlab("Semantic Coherence")  + 
+  theme_light() 
+```
+
+
+
+
+##let's try k=24 topics
+
+
+```{r}
+set.seed(123)
+system.time(lda <- LDA(dtm, method= "Gibbs", k = 24, control=list(verbose=50L))) 
+```
+```{r}
+termsList <- get_terms(lda, 10)
+terms(lda, 10)  #topics look mutually exclusive
+```
+```{r}
+lda_topics <- tidy(lda, matrix = "beta")
+str(lda_topics)
+```
+```{r}
+top_terms <- group_by(lda_topics, topic)
+str(top_terms)
+```
+```{r}
+# let's keep only the first top 4 betas for each of the topics
+top_terms <- top_n(top_terms, 4, beta) 
+top_terms <- ungroup(top_terms)
+top_terms <- arrange(top_terms , topic, -beta)
+str(top_terms)
+table(top_terms$topic)
+```
+```{r}
+top_terms <-  mutate(top_terms,   topic = factor(topic),
+    term = reorder_within(term, beta, topic)) 
+str(top_terms)
+```
+```{r}
+ggplot(top_terms, aes(term, beta, fill = topic)) +
+geom_bar(alpha = 0.8, stat = "identity", show.legend = FALSE) +
+scale_x_reordered() +
+facet_wrap(facets = vars(topic), scales = "free", ncol = 5)+
+coord_flip()
+
+#there are no overlaps of terms between the topics which indicates a high level of semantic coherence. Let's validate though
+```
+```{r}
+head(topics(lda))
+```
+```{r}
+str(docvars(news_dfm))
+docvars(news_dfm, 'pred_topic') <- topics(lda)
+str(docvars(news_dfm))
+```
+```{r}
+head(lda@gamma)
+round(lda@gamma[1,], 2)
+max(lda@gamma[,1])#maximum value of theta for topic 1 in the dataframe
+```
+```{r}
+which.max(lda@gamma[,1])
+```
+```{r}
+strwrap(news_dfm@docvars$text2[433])
+```
+```{r}
+round(lda@gamma[1,], 2)
+```
+```{r} 
+# an article with the second highest gamma(=theta) for topic 1
+sort(lda@gamma[,1])[length(lda@gamma[,1]) - 1] 
+which(lda@gamma[,1]==sort(lda@gamma[,1])[length(lda@gamma[,1]) - 1]  )
+strwrap(news_dfm@docvars$text2[353])
+```
+```{r} 
+# an article with the third highest gamma(=theta) for topic 1
+sort(lda@gamma[,1])[length(lda@gamma[,1]) - 2] 
+which(lda@gamma[,1]==sort(lda@gamma[,1])[length(lda@gamma[,1]) - 2]  )
+strwrap(news_dfm@docvars$text2[122])
+```
+
+

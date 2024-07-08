@@ -1,0 +1,347 @@
+---
+title: "ML: NB, RF, SVM"
+author: "Miras Tolepbergen"
+date: "2023-11-08"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+rm(list=ls(all=TRUE))
+setwd("C:/Users/Miras/Desktop/u_m/1st/big_data_analytics/Labs/projects")
+getwd()
+library(quanteda)
+library(readtext)
+library(naivebayes)
+library(ranger)
+library(e1071)
+library(reshape2)
+library(ggplot2)
+```
+
+```{r}
+uk <- read.csv("C:/Users/Miras/Desktop/u_m/1st/big_data_analytics/Labs/projects/uk_train.csv", 
+               stringsAsFactors=FALSE)
+str(uk)
+uk$polite <- ifelse(uk$polite == 'polite', 1, 0)
+uk$polite <- factor(uk$polite,  levels=c("0", "1"), labels=c("impolite", "polite"))
+str(uk)
+```
+
+
+```{r}
+table(uk$polite)
+prop.table(table(uk$polite))
+nrow(uk)
+```
+
+
+```{r}
+# DfM for the train-set
+
+myCorpusTwitterTrain <- corpus(uk)
+tok2 <- tokens(myCorpusTwitterTrain , remove_punct = TRUE, remove_numbers=TRUE, 
+               remove_symbols = TRUE, split_hyphens = TRUE, remove_separators = TRUE, remove_URL = TRUE)
+tok2 <- tokens_remove(tok2, stopwords("en"))
+# let's also remove the unicode symbols
+tok2 <- tokens_remove(tok2, c("0*", "*@*"))
+tok2 <- tokens_wordstem (tok2)
+Dfm_train <- dfm(tok2)
+
+# Let's trim the dfm in order to keep only tokens that appear in 2 or more tweets
+# and let's keep only features with at least 2 characters
+Dfm_train <- dfm_trim(Dfm_train , min_docfreq = 2, verbose=TRUE)
+Dfm_train  <- dfm_remove(Dfm_train , min_nchar = 2)
+topfeatures(Dfm_train , 20)  # 20 top words
+```
+
+
+```{r}
+# DfM for the test-set
+
+uk10 <- read.csv("C:/Users/Miras/Desktop/u_m/1st/big_data_analytics/Labs/projects/uk_test2.csv", 
+                 stringsAsFactors=FALSE)
+str(uk10)
+nrow(uk10)
+myCorpusTwitterTest <- corpus(uk10)
+tok <- tokens(myCorpusTwitterTest , remove_punct = TRUE, remove_numbers=TRUE, 
+              remove_symbols = TRUE, split_hyphens = TRUE, remove_separators = TRUE, remove_URL = TRUE)
+tok <- tokens_remove(tok, stopwords("en"))
+tok <- tokens_remove(tok, c("0*", "*@*"))
+tok <- tokens_wordstem (tok)
+Dfm_test <- dfm(tok)
+Dfm_test<- dfm_trim(Dfm_test, min_docfreq = 2, verbose=TRUE)
+Dfm_test<- dfm_remove(Dfm_test, min_nchar = 2)
+
+# with just 0s in its DfM It would be a non-reliable prediction by definition
+Dfm_test[ntoken(Dfm_test) == 0,]
+Dfm_test <- Dfm_test[ntoken(Dfm_test) != 0,]
+Dfm_test[ntoken(Dfm_test) == 0,]
+topfeatures(Dfm_test , 20)  # 20 top words
+```
+
+
+```{r}
+#make the features identical between train and test-set 
+#by passing Dfm_train to dfm_match() as a pattern
+
+setequal(featnames(Dfm_train), featnames(Dfm_test)) 
+nfeat(Dfm_test)
+nfeat(Dfm_train)
+test_dfm  <- dfm_match(Dfm_test, features = featnames(Dfm_train))
+nfeat(test_dfm)
+setequal(featnames(Dfm_train), featnames(test_dfm ))
+```
+
+
+```{r}
+#convert the two DfMs into matrices for the ML algorithms to work
+
+train <- as(Dfm_train, "dgCMatrix")
+test <- as(test_dfm, "dgCMatrix")
+```
+
+#Naive Bayes Model
+```{r}
+table(Dfm_train@x)
+str(Dfm_train@docvars$polite)
+
+system.time(NB <- multinomial_naive_bayes(x=train, y=Dfm_train@docvars$polite))
+NB
+prop.table(table(Dfm_train@docvars$polite)) # prior probabilities
+```
+
+
+```{r}
+head(NB$params, 10) #likelihood of a tweet containing a word 'faith' to be polite 
+                    #is much higher than impolite, similar can be said about words like 
+                    #'reform' and 'marriag', while likelihood of a tweet containing words 
+                    #'english' and 'scotland' for instance to be impolite is slightly higher 
+```
+
+
+```{r}
+head(sort((NB$params[,2]-NB$params[,1]) , decreasing=TRUE), 10) 
+# the features that present the highest absolute value in the difference between 
+#the two likelihoods can be considered as among the most important ones in affecting 
+#the overall performance of the algorithm in predicting the "polite" label in the training-set
+head(sort((NB$params[,1]-NB$params[,2]) , decreasing=TRUE), 10) #same with "impolite" feature
+```
+
+
+```{r}
+# let's predict the test-set 
+
+predicted_nb <- predict(NB ,test )
+table(predicted_nb )
+prop.table(table(predicted_nb ))
+```
+
+
+```{r}
+head(predict(NB ,test))
+head(predict(NB ,test, type="prob" ))
+```
+
+#Random Forrest
+```{r}
+set.seed(123)  
+system.time(RF <- ranger(y= Dfm_train@docvars$polite, x=train, keep.inbag=TRUE))
+RF
+```
+
+
+```{r}
+# see how  observations/texts are in-bag in each tree. Let's see the first (of 500) tree:
+RF$inbag.counts[1]
+sum(unlist(RF$inbag.counts[1]))
+```
+
+
+```{r}
+RF
+RF$prediction.error
+1-RF$prediction.error
+```
+
+
+```{r}
+nt <- seq(1, 501, 10) 
+# We can also plot how the OOB predictions errors change over the number of 
+#trees we employ. For example, between 1 and 501 trees
+nt
+
+oob_mse <- vector("numeric", length(nt))
+
+for(i in 1:length(nt)){
+  set.seed(123)
+  rr2 <- ranger(y= Dfm_train@docvars$polite, x=train,  num.threads=4, num.trees = nt[i], write.forest = FALSE)
+  oob_mse[i] <- rr2$prediction.error
+}
+
+oob_mse
+plot(x = nt, y = oob_mse, col = "red", type = "l")  
+#the lowest prediction error for OOB at about 100 trees
+```
+
+
+```{r}
+set.seed(123)
+system.time(RFI <- ranger(y= Dfm_train@docvars$polite, x=train, importance="permutation", 
+                          scale.permutation.importance = TRUE))
+head(RFI $variable.importance)
+```
+
+
+```{r}
+# 10 most important words
+head(sort(RFI$variable.importance , decreasing=TRUE), 10) 
+#these variables increase the avg. error rate in our prediction relative to 
+#when we use the actual variable value of that feature
+```
+
+
+```{r}
+#predict test-set
+
+set.seed(123)
+system.time(predicted_rf <- predict(RF, test))
+str(predicted_rf )
+table(predicted_rf$predictions )
+prop.table(table(predicted_rf$predictions ))
+
+set.seed(1)
+system.time(predicted_rf2 <- predict(RF, test))
+table(predicted_rf2$predictions )
+```
+
+
+```{r}
+set.seed(123)
+system.time(RF2 <- ranger(y= Dfm_train@docvars$polite, x=train,  probability=TRUE))
+
+set.seed(123)
+system.time(predicted_rf2 <- predict(RF2, test))
+str(predicted_rf )
+str(predicted_rf2 )
+head(predicted_rf2$predictions )
+```
+
+
+```{r}
+set.seed(123)
+system.time(predicted_rfALL <- predict(RF, test, predict.all=TRUE))
+str(predicted_rfALL )
+# let's see the prediction of the 500 trees for the first text in the test-set
+predicted_rfALL$predictions[1,]
+# this text is classified as 2 i.e., polite
+table(predicted_rfALL$predictions[1,])
+# let's see the prediction of the 500 trees for the second text in the test-set
+predicted_rfALL$predictions[2,]
+# this text is classified between 1-2 i.e. impolite and polite respectively)
+table(predicted_rfALL$predictions[2,]) #more polite than impolite though
+# and indeed:
+head(predicted_rf$predictions )
+```
+
+#Support Vector Machines SVM
+```{r}
+system.time(SV <- svm(y= Dfm_train@docvars$polite, x=train, kernel='linear'))
+SV
+```
+
+
+```{r}
+length(SV$index) 
+nrow(train) # 244 out of 360 texts in the training-set data
+```
+
+
+```{r}
+head(SV$coefs)
+summary(SV$coefs)
+str(SV) #the decision values in classifying the documents in the training-set
+```
+
+
+```{r}
+head(SV$decision.values) 
+#positive coeff. means text is classified as 'polite', thus all first  are 'polite'
+head(predict(SV , train))
+```
+
+
+```{r}
+# let's illustrate texts that represent the support vectors in our case
+str(uk)
+vectors <- uk[SV$index,]
+nrow(vectors)
+str(vectors) # texts 1, 3, 12-15 for example are absent cause they are not supporting vectors!
+vectors$coefs <- SV$coefs[,1]
+str(vectors)
+summary(vectors$coefs)
+```
+
+
+```{r}
+vectors<- vectors[order(vectors$coef),] # negative coefficient implies 'impolite' text
+str(vectors)
+strwrap((vectors$text)[1:7])
+```
+
+
+```{r}
+vectors <- vectors[order(-vectors$coef),] # positive coefficient implies 'polite' text
+str(vectors)
+strwrap((vectors$text)[1:7])
+```
+
+
+```{r}
+# let's predict the test-set 
+system.time(predicted_svm <- predict(SV , test))
+table(predicted_svm )
+prop.table(table(predicted_svm ))
+```
+
+
+```{r}
+system.time(SVprob <- svm(y= Dfm_train@docvars$polite, x=train, kernel='linear', probability=TRUE)) #with probabilities
+
+head(predict(SVprob , test))
+head(attr(predict(SVprob , test,probability=TRUE),"probabilities"))
+
+```
+
+#NB, RF, SVM results comparison
+```{r}
+prop.table(table(predicted_nb )) #NB
+prop.table(table(predicted_rf$predictions )) #RF
+prop.table(table(predicted_svm )) #SVM
+```
+
+
+```{r}
+results <- as.data.frame(rbind(prop.table(table(predicted_nb )), prop.table(table(predicted_rf$predictions )), prop.table(table(predicted_svm ))))
+str(results)
+results$algorithm <- c("NB", "RF", "SVM")
+str(results)
+```
+
+
+```{r}
+# plot the results
+df.long<-melt(results,id.vars=c("algorithm"))
+str(df.long)
+```
+
+
+```{r}
+ggplot(df.long,aes(algorithm,value,fill=variable))+
+  geom_bar(position="dodge",stat="identity") + theme(axis.text.x = element_text(color="#993333", size=10, angle=90)) + coord_flip() +  
+  ylab(label="Review class in the test-set") +  xlab("algorithm") + scale_fill_discrete(name = "Prediction", labels = c("impolite", "polite"))
+```
+##RF results are the quite different ones regarding the both classess, while SVM and NB results are very similar

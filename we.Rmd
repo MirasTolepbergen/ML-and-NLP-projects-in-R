@@ -1,0 +1,223 @@
+---
+title: "WE"
+author: "Miras Tolepbergen"
+date: "2023-11-29"
+output: word_document
+---
+
+```{r}
+install.packages("Rtsne", repos='http://cran.us.r-project.org') 
+install.packages("text2vec", repos='http://cran.us.r-project.org') 
+install.packages("plotly", repos='http://cran.us.r-project.org') 
+install.packages("umap", repos='http://cran.us.r-project.org') 
+devtools::install_github("oscarkjell/text")
+install.packages("text")
+
+```
+
+```{r}
+rm(list=ls(all=TRUE))
+setwd("C:/Users/Miras/Desktop/u_m/1st/big_data_analytics/Labs/projects")
+getwd()
+library(quanteda)
+library(readtext)
+library(text2vec)
+library(quanteda.textplots)
+library(Rtsne)
+library(ggplot2)
+library(plotly)
+library(umap)
+library(dplyr)
+library(ranger)
+library(caret)
+library(cvTools)
+library(lsa)
+library(LSAfun)
+library(text)
+```
+
+```{r}
+tot <- read.csv("clothing_reviews23.csv")
+tot$text <- gsub("'"," ",tot$text)
+
+myCorpus <- corpus(tot)
+
+tok2 <- tokens(myCorpus , remove_punct = TRUE, remove_numbers=TRUE, remove_symbols = TRUE, split_hyphens = TRUE, remove_separators = TRUE)
+tok2 <- tokens_remove(tok2, stopwords("en"))
+
+Dfm <- dfm(tok2 )
+Dfm <- dfm_remove(Dfm , min_nchar=2)
+topfeatures(Dfm )
+Dfm <- dfm_trim(Dfm,  min_termfreq = 5, verbose=TRUE)
+
+
+```
+
+```{r}
+# Applying the GloVe algorithm via Quanteda 
+
+# Let's first extract the vocabulary from our Dfm
+Dfm_vocab <- featnames(Dfm )
+str(Dfm_vocab)
+# Then let's select the tokens that are present in our previously defined corpus
+mov_tokens <- tokens(myCorpus) 
+mov_tokens
+
+mov_tokens2 <- tokens_select(mov_tokens, Dfm_vocab, padding = TRUE)
+
+```
+
+```{r}
+fcmat_news <- fcm(mov_tokens2, context = "window", count = "weighted", weights = 1/(1:5))
+fcmat_news
+
+```
+
+```{r}
+# Let's estimate WE via Glove
+
+glove <- GlobalVectors$new(rank=100, x_max=10)
+
+set.seed(123)
+system.time(glove_main <- glove$fit_transform(fcmat_news, n_iter = 50, convergence_tol = 0.01, n_threads = 1))
+str(glove_main)
+```
+
+```{r}
+# Plotting words in the WE dimensional space
+
+# Let's create a dataframe out of the Glove results
+glove_dataframe <- as.data.frame(glove_main)
+nrow(glove_dataframe)
+# the same # of words as in our co-occurance matrix of course!
+nrow(fcmat_news)
+```
+
+```{r}
+colnames(glove_dataframe )
+# let's add to glove_dataframe a specific column called "word" with the list of features
+glove_dataframe$word <- row.names(glove_dataframe )
+colnames(glove_dataframe )
+
+# let's define a plot function for the second and third dimension for example (we can of course change the dimensions!)
+plot_words <- function(words, glove_dataframe){
+  # empty plot
+  plot(0, 0, xlim=c(-0.5, 0.5), ylim=c(-0.5,0.5), type="n",
+       xlab="Second dimension", ylab="Third dimension")
+  for (word in words){
+    # extract second and third dimensions
+    vector <- as.numeric(glove_dataframe[glove_dataframe$word==word,2:3])
+    # add to plot
+    text(vector[1], vector[2], labels=word)
+  }
+}
+
+plot_words(c("dress", "sexy", "silky", "comfortable", "love", "pretty"), glove_dataframe)
+
+```
+
+```{r}
+set.seed(123)
+system.time(tsne <-  Rtsne(glove_main[1:500,], perplexity = 50))
+str(tsne)
+
+tsne_plot <- tsne$Y
+tsne_plot  <- as.data.frame(tsne_plot)
+str(tsne_plot)
+tsne_plot$word  <- row.names(glove_main)[1:500]
+str(tsne_plot)
+
+tsne_plot2 <- ggplot(tsne_plot, aes(x = V1, y = V2, label = word)) + geom_text(size = 3)
+tsne_plot2
+```
+
+```{r}
+tsne_plot[which(tsne_plot$word=="xxs"),]
+tsne_plot[which(tsne_plot$word=="figure"),]
+
+# let's transform the ggplot into an interacting plotly plot
+#ggplotly(tsne_plot2)
+```
+
+```{r}
+set.seed(123)
+system.time(glove_umap <- umap(glove_main, n_components = 2, metric = "cosine", n_neighbors = 20, min_dist = 0.1))
+saveRDS(glove_umap, file = "glove_umap.rds")
+
+glove_umap <- readRDS("glove_umap.rds")
+```
+
+```{r}
+glove_umap
+head(glove_umap$layout, 3)
+str(glove_umap$layout)
+df_glove_umap <- as.data.frame(glove_umap$layout)
+str(df_glove_umap)
+df_glove_umap$word <- row.names(df_glove_umap)
+
+ggplot(df_glove_umap) +
+      geom_point(aes(x = V1, y = V2), colour = 'blue', size = 0.05) + 
+labs(title = "Word embedding in 2D using UMAP")
+```
+
+```{r}
+# Plot the bottom part of the GloVe word embedding with labels
+ggplot(df_glove_umap[df_glove_umap$V1 > -2.0 & df_glove_umap$V1 < 3 & df_glove_umap$V2 < -2,]) +
+      geom_point(aes(x = V1, y = V2), colour = 'blue', size = 2) +
+      geom_text(aes(V1, V2, label =word), size = 2.5, vjust=-1, hjust=0) +
+      labs(title = "GloVe word embedding in 2D using UMAP - partial view")
+ 
+```
+
+```{r}
+jeans<- glove_main["jeans", , drop = F] # Let's see what is similar to "jeans"
+cos_sim_great <- sim2(x = glove_main, y = jeans, method = "cosine", norm = "l2")
+head(sort(cos_sim_great[,1], decreasing = T), 10) #most of the similarities make sense 
+```
+
+```{r}
+# let's see the results in our UMAP graph
+select <- data.frame(rownames(as.data.frame(head(sort(cos_sim_great[,1], decreasing = TRUE), 25))))
+colnames(select) <- "word"
+selected_words <- inner_join(x= df_glove_umap , y=select, by= "word")  
+
+ggplot(selected_words, aes(x = V1, y = V2, colour = word == 'jeans')) + 
+      geom_point(show.legend = FALSE) + 
+      scale_color_manual(values = c('black', 'red')) +
+      geom_text(aes(V1, V2, label = word), show.legend = FALSE, size = 3.5, vjust=-1.5, hjust=0) +
+      labs(title = "GloVe word embedding of words related to 'jeans'") 
+```
+
+```{r}
+# Once we have the vectors for each word, we can also compute the similarity between a pair of words:
+
+similarity <- function(word1, word2){
+    lsa::cosine(
+        x=as.numeric(glove_dataframe[glove_dataframe$word==word1,1:100]),
+        y=as.numeric(glove_dataframe[glove_dataframe$word==word2,1:100]))
+}
+
+similarity("jacket", "jeans")
+similarity("home", "jeans")
+similarity("pants", "jeans")
+```
+
+```{r}
+# Machine Learning classification with WE
+
+colnames(glove_dataframe )
+glove_dataframe <- select(glove_dataframe, word, everything()) # let's move the "word" column to the top
+colnames(glove_dataframe )
+glove_dataframe[1:5, 2:11]
+
+```
+
+```{r}
+# At the moment glove_dataframe is a matrix of 2878 rows (one for each feature) and 101 columns (1 column for word and the other 100 for the 100 
+# dimensions of WE)
+nrow(glove_dataframe)
+ncol(glove_dataframe)
+# but in the original Dfm there are 5000 documents
+ndoc(Dfm)
+```
+
